@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ride Sharing</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+
+        #map {
+            height: 80vh;
+            width: 100%;
+        }
+
+        .controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            width: 300px;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+        }
+
+        .passenger-controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            width: 300px;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+        }
+
+        label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            display: block;
+        }
+
+        input {
+            width: calc(100% - 22px);
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        button {
+            padding: 10px 15px;
+            background-color: #000000;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+        }
+
+        button:hover {
+            background-color: #4d4f4d;
+        }
+
+        .card {
+            position: absolute;
+            top: 150px;
+            right: 10px;
+            z-index: 1000;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+            width: 300px;
+        }
+
+        .card h3 {
+            margin-top: 0;
+        }
+
+        .card p {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div>
+        <div class="controls">
+            <label for="destination">Enter Destination:</label>
+            <input type="text" id="destination" placeholder="Type a location..." />
+            <button id="postRide">Post Ride</button>
+        </div>
+        <div class="passenger-controls">
+            <label for="passengerDestination">Passenger Destination:</label>
+            <input type="text" id="passengerDestination" placeholder="Type a location..." />
+            <label for="boardingPoint">Boarding Point:</label>
+            <input type="text" id="boardingPoint" placeholder="Type a location..." />
+            <button id="findRides">Find Rides</button>
+        </div>
+        <div id="map"></div>
+        <div class="card" id="routeInfo" style="display: none;">
+            <h3>Route Information</h3>
+            <p id="distance"></p>
+            <p id="duration"></p>
+            <h4>Instructions:</h4>
+            <ul id="instructions"></ul>
+        </div>
+    </div>
+
+    <script>
+        const map = L.map('map').setView([51.505, -0.09], 13);
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+        let marker, circle, routeLayer, destinationMarker, boardingMarker;
+        let riderLat, riderLng; // Track rider's real-time location
+
+        // Function to update rider's location on the map
+        function updateRiderLocation(lat, lng) {
+            riderLat = lat;
+            riderLng = lng;
+
+            if (marker) {
+                marker.setLatLng([lat, lng]); // Move marker
+            } else {
+                marker = L.marker([lat, lng], {
+                    icon: L.divIcon({
+                        className: 'current-location-icon',
+                        html: '<div style="background-color: blue; border-radius: 50%; width: 20px; height: 20px;"></div>'
+                    })
+                }).addTo(map);
+            }
+            map.setView([lat, lng]);
+        }
+
+        // Watch the user's position and update dynamically
+        navigator.geolocation.watchPosition(
+            function (pos) {
+                updateRiderLocation(pos.coords.latitude, pos.coords.longitude);
+            },
+            function (err) {
+                alert("Geolocation error: " + err.message);
+            },
+            { enableHighAccuracy: true, maximumAge: 0 }
+        );
+
+        // Handle Ride Posting and Route Calculation
+        document.getElementById('postRide').addEventListener('click', function () {
+            const destinationValue = document.getElementById('destination').value;
+            if (destinationValue) {
+                fetch(`/api/geocode?location=${encodeURIComponent(destinationValue)}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.length > 0) {
+                            const destLat = data[0].lat;
+                            const destLng = data[0].lon;
+                            const destinationName = data[0].display_name;
+
+                            if (destinationMarker) map.removeLayer(destinationMarker);
+                            destinationMarker = L.marker([destLat, destLng]).addTo(map);
+
+                            const startCoords = [riderLat, riderLng];
+                            const endCoords = [destLat, destLng];
+
+                            fetch(`/api/route?start=${startCoords[1]},${startCoords[0]}&end=${endCoords[1]},${endCoords[0]}`)
+                                .then(response => response.json())
+                                .then(routeData => {
+                                    if (routeData.features && routeData.features.length > 0) {
+                                        const routeCoords = routeData.features[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
+
+                                        if (routeLayer) map.removeLayer(routeLayer);
+                                        routeLayer = L.polyline(routeCoords, { color: 'black' }).addTo(map);
+                                        map.fitBounds(routeLayer.getBounds());
+
+                                        document.getElementById('routeInfo').style.display = 'block';
+                                        document.getElementById('distance').textContent = `Distance: ${routeData.features[0].properties.segments[0].distance / 1000} km`;
+                                        document.getElementById('duration').textContent = `Duration: ${Math.round(routeData.features[0].properties.segments[0].duration / 60)} min`;
+
+                                        const instructions = routeData.features[0].properties.segments[0].steps;
+                                        const instructionsList = document.getElementById('instructions');
+                                        instructionsList.innerHTML = '';
+                                        instructions.forEach(step => {
+                                            const li = document.createElement('li');
+                                            li.textContent = `${step.instruction} (${step.distance} m, ${Math.round(step.duration)} s)`;
+                                            instructionsList.appendChild(li);
+                                        });
+
+                                        // Save ride details to the database
+                                        const rideDetails = {
+                                            driver_id: 1, // Replace with actual driver ID that exists in the users table
+                                            start_lat: startCoords[0],
+                                            start_lng: startCoords[1],
+                                            end_lat: endCoords[0],
+                                            end_lng: endCoords[1],
+                                            route_polyline: JSON.stringify(routeCoords),
+                                            destination_name: destinationName
+                                        };
+
+                                        fetch('/api/rides', {
+                                            method: 'POST',
+                                            headers: {
+                                                'Content-Type': 'application/json'
+                                            },
+                                            body: JSON.stringify(rideDetails)
+                                        })
+                                            .then(response => response.json())
+                                            .then(data => {
+                                                console.log('Ride saved with ID:', data.ride_id);
+                                            })
+                                            .catch(err => console.error('Error saving ride:', err));
+                                    } else {
+                                        alert("No routes found.");
+                                    }
+                                })
+                                .catch(err => console.error("Routing error:", err));
+                        } else {
+                            alert("Destination not found.");
+                        }
+                    })
+                    .catch(err => console.error("Geocoding error:", err));
+            } else {
+                alert("Please enter a destination.");
+            }
+        });
+
+        // Handle Passenger Ride Selection
+        document.getElementById('findRides').addEventListener('click', function () {
+            const passengerDestination = document.getElementById('passengerDestination').value;
+            const boardingPoint = document.getElementById('boardingPoint').value;
+            if (passengerDestination && boardingPoint) {
+                fetch(`/api/geocode?location=${encodeURIComponent(passengerDestination)}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.length > 0) {
+                            const destLat = data[0].lat;
+                            const destLng = data[0].lon;
+
+                            fetch(`/api/geocode?location=${encodeURIComponent(boardingPoint)}`)
+                                .then(response => response.json())
+                                .then(boardingData => {
+                                    if (boardingData.length > 0) {
+                                        const boardingLat = boardingData[0].lat;
+                                        const boardingLng = boardingData[0].lon;
+
+                                        // Fetch available rides
+                                        fetch(`/api/rides?destination_lat=${destLat}&destination_lng=${destLng}`)
+                                            .then(response => response.json())
+                                            .then(rides => {
+                                                if (rides.length === 0) {
+                                                    alert("No rides found for the given destination.");
+                                                    return;
+                                                }
+
+                                                // Display available rides
+                                                console.log('Available rides:', rides);
+
+                                                // Assuming the user selects the first ride
+                                                const selectedRide = rides[0];
+                                                if (!selectedRide.route_polyline) {
+                                                    alert("Selected ride does not have a valid route.");
+                                                    return;
+                                                }
+
+                                                const routeCoords = JSON.parse(selectedRide.route_polyline);
+
+                                                // Check if the boarding point is within the radius of the route
+                                                const radius = 200; // 200 meters
+                                                let isWithinRadius = false;
+                                                routeCoords.forEach(coord => {
+                                                    const distance = map.distance([boardingLat, boardingLng], coord);
+                                                    if (distance <= radius) {
+                                                        isWithinRadius = true;
+                                                    }
+                                                });
+
+                                                if (isWithinRadius) {
+                                                    // Show the route on the map
+                                                    if (routeLayer) map.removeLayer(routeLayer);
+                                                    routeLayer = L.polyline(routeCoords, { color: 'black' }).addTo(map);
+                                                    map.fitBounds(routeLayer.getBounds());
+
+                                                    // Show driver's current location
+                                                    fetch(`/api/ride_tracking?ride_id=${selectedRide.ride_id}`)
+                                                        .then(response => response.json())
+                                                        .then(trackingData => {
+                                                            const driverLat = trackingData.current_lat;
+                                                            const driverLng = trackingData.current_lng;
+                                                            L.marker([driverLat, driverLng], {
+                                                                icon: L.divIcon({
+                                                                    className: 'current-location-icon',
+                                                                    html: '<div style="background-color: red; border-radius: 50%; width: 20px; height: 20px;"></div>'
+                                                                })
+                                                            }).addTo(map);
+                                                        })
+                                                        .catch(err => console.error("Error fetching tracking data:", err));
+
+                                                    // Allow passenger to select boarding point
+                                                    if (boardingMarker) map.removeLayer(boardingMarker);
+                                                    boardingMarker = L.marker([boardingLat, boardingLng], {
+                                                        draggable: true,
+                                                        icon: L.divIcon({
+                                                            className: 'boarding-point-icon',
+                                                            html: '<div style="background-color: green; border-radius: 50%; width: 20px; height: 20px;"></div>'
+                                                        })
+                                                    }).addTo(map);
+
+                                                    boardingMarker.on('dragend', function (event) {
+                                                        const newLatLng = event.target.getLatLng();
+                                                        const newLat = newLatLng.lat;
+                                                        const newLng = newLatLng.lng;
+
+                                                        // Check if the new boarding point is within the radius of the route
+                                                        let isNewWithinRadius = false;
+                                                        routeCoords.forEach(coord => {
+                                                            const distance = map.distance([newLat, newLng], coord);
+                                                            if (distance <= radius) {
+                                                                isNewWithinRadius = true;
+                                                            }
+                                                        });
+
+                                                        if (isNewWithinRadius) {
+                                                            alert("Boarding point is within the route radius. You can book the ride.");
+                                                            // Save passenger request to the database
+                                                            const passengerRequest = {
+                                                                passenger_id: 1, // Replace with actual passenger ID that exists in the users table
+                                                                ride_id: selectedRide.ride_id,
+                                                                pickup_lat: newLat,
+                                                                pickup_lng: newLng
+                                                            };
+
+                                                            fetch('/api/passenger_requests', {
+                                                                method: 'POST',
+                                                                headers: {
+                                                                    'Content-Type': 'application/json'
+                                                                },
+                                                                body: JSON.stringify(passengerRequest)
+                                                            })
+                                                                .then(response => response.json())
+                                                                .then(data => {
+                                                                    console.log('Passenger request saved with ID:', data.request_id);
+                                                                })
+                                                                .catch(err => console.error('Error saving passenger request:', err));
+                                                        } else {
+                                                            alert("Boarding point is not within the route radius. Please select a different point.");
+                                                        }
+                                                    });
+                                                } else {
+                                                    alert("Boarding point is not within the route radius.");
+                                                }
+                                            })
+                                            .catch(err => console.error("Error fetching rides:", err));
+                                    } else {
+                                        alert("Boarding point not found.");
+                                    }
+                                })
+                                .catch(err => console.error("Geocoding error:", err));
+                        } else {
+                            alert("Destination not found.");
+                        }
+                    })
+                    .catch(err => console.error("Geocoding error:", err));
+            } else {
+                alert("Please enter both destination and boarding point.");
+            }
+        });
+    </script>
+</body>
+
+</html>

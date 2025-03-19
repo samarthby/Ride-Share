@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Available Rides</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+</head>
+
+<body>
+    <div id="ride-list"></div>
+    <div id="map" style="height: 80vh; width: 100%; display: none;"></div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const destinationLat = urlParams.get('destination_lat');
+        const destinationLng = urlParams.get('destination_lng');
+
+        fetch(`/api/rides?destination_lat=${destinationLat}&destination_lng=${destinationLng}`)
+            .then(response => response.json())
+            .then(rides => {
+                const rideList = document.getElementById('ride-list');
+                rides.forEach(ride => {
+                    const rideDiv = document.createElement('div');
+                    rideDiv.className = 'ride';
+                    rideDiv.innerHTML = `
+                        <h3>Ride by Driver ${ride.driver_id}</h3>
+                        <p>Destination: ${ride.destination_name}</p>
+                        <button onclick="selectBoardingPoint(${ride.ride_id}, '${ride.route_polyline}')">Select Boarding Point</button>
+                    `;
+                    rideList.appendChild(rideDiv);
+                });
+            })
+            .catch(err => console.error("Error fetching rides:", err));
+
+        function selectBoardingPoint(rideId, routePolyline) {
+            document.getElementById('ride-list').style.display = 'none';
+            document.getElementById('map').style.display = 'block';
+
+            const map = L.map('map').setView([destinationLat, destinationLng], 13);
+            L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '© OpenStreetMap'
+            }).addTo(map);
+
+            const routeCoords = JSON.parse(routePolyline);
+            const routeLayer = L.polyline(routeCoords, { color: 'black' }).addTo(map);
+            map.fitBounds(routeLayer.getBounds());
+
+            let boardingMarker;
+            map.on('click', function (e) {
+                if (boardingMarker) {
+                    map.removeLayer(boardingMarker);
+                }
+                boardingMarker = L.marker(e.latlng, {
+                    draggable: true,
+                    icon: L.divIcon({
+                        className: 'boarding-point-icon',
+                        html: '<div style="background-color: green; border-radius: 50%; width: 20px; height: 20px;"></div>'
+                    })
+                }).addTo(map);
+
+                boardingMarker.on('dragend', function (event) {
+                    const newLatLng = event.target.getLatLng();
+                    const newLat = newLatLng.lat;
+                    const newLng = newLatLng.lng;
+
+                    // Check if the new boarding point is within the radius of the route
+                    const radius = 200; // 200 meters
+                    let isNewWithinRadius = false;
+                    routeCoords.forEach(coord => {
+                        const distance = map.distance([newLat, newLng], coord);
+                        if (distance <= radius) {
+                            isNewWithinRadius = true;
+                        }
+                    });
+
+                    if (isNewWithinRadius) {
+                        if (confirm("Boarding point is within the route radius. Do you want to confirm this point?")) {
+                            // Save passenger request to the database
+                            const passengerRequest = {
+                                passenger_id: 1, // Replace with actual passenger ID that exists in the users table
+                                ride_id: rideId,
+                                pickup_lat: newLat,
+                                pickup_lng: newLng
+                            };
+
+                            fetch('/api/passenger_requests', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify(passengerRequest)
+                            })
+                                .then(response => response.json())
+                                .then(data => {
+                                    alert('Passenger request saved with ID: ' + data.request_id);
+                                    // Add Point A to the route
+                                    L.marker([newLat, newLng], {
+                                        icon: L.divIcon({
+                                            className: 'boarding-point-icon',
+                                            html: '<div style="background-color: red; border-radius: 50%; width: 20px; height: 20px;">A</div>'
+                                        })
+                                    }).addTo(map);
+                                })
+                                .catch(err => console.error('Error saving passenger request:', err));
+                        }
+                    } else {
+                        alert("Boarding point is not within the route radius. Please select a different point.");
+                    }
+                });
+            });
+        }
+    </script>
+</body>
+
+</html>
